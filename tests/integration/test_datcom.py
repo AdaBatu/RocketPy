@@ -161,7 +161,7 @@ def test_parse_datcom_output_rejects_incomplete_data(replacement, message, tmp_p
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "exit", "timeout", "missing", "input", "grid"]
+    "failure", [None, "exit", "timeout", "missing", "input", "grid", "airfoil"]
 )
 def test_run_datcom_temp_directory_cleanup(failure, tmp_path):
     """Executable/deck copies and all outputs are removed on success and every failure."""
@@ -188,18 +188,25 @@ def test_run_datcom_temp_directory_cleanup(failure, tmp_path):
             shutil.copyfile(SAMPLE, directory / "for006.dat")
         if failure == "input":
             (directory / "for006.dat").write_text("** ERROR ** 1*F")
+        if failure == "airfoil":
+            with (directory / "for006.dat").open("a") as stream:
+                stream.write("\n*** ANALYSIS FOR THIS AIRFOIL IMPOSSIBLE.\n")
         return SimpleNamespace(
             returncode=1 if failure == "exit" else 0, stderr="failure"
         )
 
     # Act
     with patch("rocketpy.rocket.datcom.subprocess.run", side_effect=execute):
-        if failure:
+        if failure and failure != "airfoil":
             with pytest.raises(RuntimeError):
                 run_datcom(source, deck, timeout=2)
         else:
             parsed = run_datcom(source, deck, timeout=2)
             assert parsed[0].shape == (2, 3)
+            if failure == "airfoil":
+                assert any(
+                    "AIRFOIL IMPOSSIBLE" in message for message in parsed.diagnostics
+                )
     # Assert
     assert len(working_directories) == 1
     assert not working_directories[0].exists()
@@ -548,3 +555,46 @@ def test_datcom_native_maximum_adaptive_grid(datcom_rocket):
         assert len(model.tables[state][4]) == 20
         assert model.tables[state][4] == pytest.approx(mach, abs=0.005)
         assert model.tables[state][5] == pytest.approx(alpha, abs=0.005)
+
+
+@pytest.mark.slow
+def test_datcom_partial_output_preserves_total_damping(datcom_rocket):
+    """PART adds component tables but must not replace whole-vehicle DAMP data."""
+    # Arrange
+    from rocketpy.rocket.datcom import datcom_decks
+
+    executable = os.environ.get("DATCOM_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATCOM_EXECUTABLE to the target 3/99 executable")
+    deck = datcom_decks(datcom_rocket)[0][False]
+    baseline = run_datcom(executable, deck)
+    # Act
+    partial = run_datcom(executable, deck.replace("NEXT CASE", "PART\nNEXT CASE"))
+    # Assert
+    for key in DAMPING_KEYS:
+        assert partial.damping[key] == pytest.approx(baseline.damping[key])
+
+
+@pytest.mark.slow
+def test_datcom_native_manual_worked_example():
+    """The independent published example reproduces its total CN/CM/CA table."""
+    # Arrange
+    executable = os.environ.get("DATCOM_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATCOM_EXECUTABLE to the target 3/99 executable")
+    deck = (SAMPLE.parent / "manual_example_for005.dat").read_text()
+    # Act
+    result = run_datcom(executable, deck)
+    # Assert
+    plain = run_datcom(executable, deck.replace("PART\n", ""))
+    for key in DAMPING_KEYS:
+        assert result.damping[key] == pytest.approx(plain.damping[key])
+    assert result.body["CN"][0] == pytest.approx(
+        [0, 1.179, 2.476, 3.992, 5.582, 7.151, 8.601, 10.093], abs=0.002
+    )
+    assert result.body["CA"][0] == pytest.approx(
+        [0.466, 0.465, 0.463, 0.458, 0.453, 0.445, 0.436, 0.426], abs=0.002
+    )
+    assert result.body["CM"][0] == pytest.approx(
+        [0, -1.577, -3.194, -5.056, -6.962, -8.904, -10.792, -12.692], abs=0.002
+    )

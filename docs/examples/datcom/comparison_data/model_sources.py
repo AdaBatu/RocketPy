@@ -35,6 +35,43 @@ class SourceUnavailable(ValueError):
     """A faithful offline comparison needs additional data or geometry support."""
 
 
+def _freeze_mach_drag(function):
+    """Capture a solver source before legacy Mach-only aliases are reassigned."""
+    from rocketpy import Function
+
+    return Function(lambda mach: function(0, 0, mach, 0, 0, 0, 0))
+
+
+def _drag_assignment(node, namespace):
+    """Find legacy drag writes in a trusted example, without changing equations."""
+    targets = (
+        node.targets
+        if isinstance(node, ast.Assign)
+        else [node.target]
+        if isinstance(node, ast.AugAssign)
+        else []
+    )
+    writes = []
+    for target in targets:
+        if isinstance(target, ast.Attribute) and target.attr in {
+            "power_off_drag",
+            "power_on_drag",
+        }:
+            owner = eval(
+                compile(ast.Expression(target.value), "<drag owner>", "eval"), namespace
+            )
+            # The initial aliases call self.*_7d dynamically. Freeze them before
+            # an expression such as alias *= factor, or rebinding *_7d would
+            # make that expression recursively call itself.
+            for name in ("power_off_drag", "power_on_drag"):
+                if getattr(owner, name) is getattr(owner, name + "_by_mach"):
+                    setattr(
+                        owner, name, _freeze_mach_drag(getattr(owner, name + "_7d"))
+                    )
+            writes.append((owner, target.attr))
+    return writes
+
+
 def _tree(source):
     return ast.parse(
         "\n".join(
@@ -388,6 +425,16 @@ def build_model(path):
             module = h.LocalPaths(ROOT).visit(module)
             module = Construction().visit(module)
             ast.fix_missing_locations(module)
+            drag_writes = _drag_assignment(node, namespace)
             exec(compile(module, str(path), "exec"), namespace)
+            for owner, name in drag_writes:
+                setattr(
+                    owner,
+                    name + "_7d",
+                    owner._Rocket__process_drag_input(getattr(owner, name), name),
+                )
+                adaptations.append(
+                    f"Source cell {index}: preserve the notebook's post-construction {name} update in the seven-input solver coefficient."
+                )
             executed.append(index)
     raise SourceUnavailable("No first Flight construction found")

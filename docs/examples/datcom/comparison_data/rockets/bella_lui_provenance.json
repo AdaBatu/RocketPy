@@ -19,7 +19,12 @@
     "roughness_height": 0.0,
     "leading_edge_radius": null
   },
-  "source_adaptations": [],
+  "source_adaptations": [
+    "Source cell 25: preserve the notebook's post-construction power_off_drag update in the seven-input solver coefficient.",
+    "Source cell 25: preserve the notebook's post-construction power_on_drag update in the seven-input solver coefficient.",
+    "Source cell 25: preserve the notebook's post-construction power_off_drag update in the seven-input solver coefficient.",
+    "Source cell 25: preserve the notebook's post-construction power_on_drag update in the seven-input solver coefficient."
+  ],
   "mach": [
     0.01,
     0.03,

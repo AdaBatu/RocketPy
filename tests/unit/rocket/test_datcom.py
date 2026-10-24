@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -605,3 +606,66 @@ def test_datcom_namelist_scientific_notation_uppercase():
     assert "1.E-05" in text
     assert "1.25E-05" in text
     assert "e" not in text
+
+
+def test_datcom_exit_diameter_override_preserves_motor(datcom_rocket):
+    """Measured aerodynamic exit diameter can correct a legacy motor placeholder."""
+    # Arrange
+    fins = datcom_rocket.fins[0]
+    original = datcom_rocket.motor.nozzle_radius
+    fins.datcom_options["nozzle_exit_diameter"] = 0.03
+    # Act
+    decks, _, _, _ = datcom_decks(datcom_rocket)
+    # Assert
+    assert _deck_value(decks[True], "DEXIT") == pytest.approx(0.03)
+    assert _deck_value(decks[False], "DEXIT") == 0
+    assert datcom_rocket.motor.nozzle_radius == original
+
+
+@pytest.mark.parametrize("diameter", [-0.01, 0, float("nan"), 0.5, None, [0.02, 0.03]])
+def test_datcom_exit_diameter_override_invalid(datcom_rocket, diameter):
+    """A nozzle override must be finite, positive and fit the body base."""
+    # Arrange
+    datcom_rocket.fins[0].datcom_options["nozzle_exit_diameter"] = diameter
+    # Act / Assert
+    with pytest.raises(ValueError, match="Powered nozzle diameter"):
+        datcom_decks(datcom_rocket)
+
+
+@pytest.mark.parametrize("mode", ["none", "full"])
+def test_datcom_exit_diameter_override_conflicting_mode(datcom_rocket, mode):
+    """An explicit nozzle opening cannot be silently ignored by another mode."""
+    # Arrange
+    datcom_rocket.fins[0].datcom_options.update(
+        nozzle_exit_diameter=0.03, powered_base_drag=mode
+    )
+    # Act / Assert
+    with pytest.raises(ValueError, match="requires powered_base_drag='nozzle'"):
+        datcom_decks(datcom_rocket)
+
+
+def test_datcom_partial_component_tables_cannot_replace_total_damping(tmp_path):
+    """Component DAMP rows printed by PART precede the total, which must win."""
+    # Arrange
+    sample = Path(__file__).parents[2] / "fixtures/surfaces/data/datcom/for006.dat"
+    raw = sample.read_text()
+    expected = parse_datcom_output(tmp_path, _output=raw)
+    rows = []
+    for line in raw.splitlines():
+        columns = line.split()
+        if columns in (
+            ["ALPHA", "CNQ", "CMQ", "CAQ", "CNAD", "CMAD"],
+            ["ALPHA", "CYR", "CLNR", "CLLR", "CYP", "CLNP", "CLLP"],
+        ):
+            rows.append(line)
+            rows.extend(
+                f"{alpha} " + " ".join(["999"] * (len(columns) - 1))
+                for alpha in [-2, 0, 2]
+            )
+            rows.append("")
+        rows.append(line)
+    # Act
+    actual = parse_datcom_output(tmp_path, _output="\n".join(rows))
+    # Assert
+    for key in DAMPING_KEYS:
+        assert actual.damping[key] == pytest.approx(expected.damping[key])

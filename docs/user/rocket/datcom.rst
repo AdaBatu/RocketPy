@@ -130,6 +130,15 @@ To model that known annulus instead, configure::
 This writes ``DEXIT=2*motor.nozzle_radius`` for the powered case. The nozzle
 must have positive radius and fit inside the aft body. ``"full"`` writes
 ``DEXIT=0.`` for a full-base diagnostic; ``"none"`` is the default.
+If the motor's radius is an unverified placeholder, supply the measured nozzle
+exit diameter independently, in meters::
+
+    datcom_options={"nozzle_exit_diameter": 0.03}
+
+An explicit diameter selects nozzle mode unless ``powered_base_drag`` is also
+specified; combining it with ``"none"`` or ``"full"`` raises an error. This
+changes only the aerodynamic input, leaving the motor's geometry and thrust
+calculations unchanged. Motor case diameter is not nozzle exit diameter.
 The coast case always uses ``DEXIT=0.`` for full base drag. ``BASE`` stays false:
 that flag controls jet/plume interaction, not the annular base-area calculation.
 Nozzle mode therefore requires no plume-flow inputs. Powered/coast selection
@@ -143,6 +152,18 @@ and executable metadata reuse the in-memory result. A geometry, reference-CG,
 flight-condition or executable change rebuilds both cases. Re-add a modified
 motor to the rocket after changing its tanks, following the normal mass-property
 workflow.
+
+Native approximation and fallback messages are retained in
+``rocket.prepare_datcom().tables[False].diagnostics`` for coast, and
+``tables[True].diagnostics`` for powered flight. Some messages require native
+``PART`` output to be printed. The manual's section 4.2.2 explains that
+``CREST CRITICAL MACH NUMBER EXCEEDED`` selects approximate airfoil properties;
+it does not by itself mean the complete coefficient tables are invalid. These
+messages deserve inspection even when the executable finishes successfully.
+When parsing ``PART`` output, damping must come from the final total-vehicle
+tables, after the component tables (section 4.2.3). The parser selects these
+totals. A native regression independently reproduces the manual's two-fin-set
+worked example (Figures 19--21), including its published CN, CM and CA.
 
 Section Inputs and Flight Conditions
 ------------------------------------
@@ -171,6 +192,11 @@ stations from zero to one. All coordinate values are fractions of chord.
 This DATCOM version includes camber effects on normal force and pitch moment
 only for NACA and USER sections at Mach 0.8 and below. HEX/ARC camber affects
 drag calculations only.
+The airfoil section module assumes sharp trailing edges. According to the
+manual's section 4.2.2, non-sharp trailing edges are treated as an ideal airfoil
+approximation. A measured blunt plate supplied as USER coordinates therefore
+still needs validation; supplying its contour does not remove that native
+method limitation.
 
 Multi-station Planforms and Panel Placement
 -------------------------------------------
@@ -528,3 +554,21 @@ hardware. Smooth-surface roughness zero is an assumption, not a measured vinyl
 finish. Carbon fibre and vinyl do not determine these missing numerical inputs.
 Use measured geometry or the calibration API; an apogee-fitted roughness is an
 effective loss calibration, not an identified material property.
+
+The manual audit also found unverified nozzle inputs in the recorded-rocket
+examples: GENESIS supplies an 84.708 mm exit diameter through its motor radius,
+while the thrust-file header lists a 75 mm motor case; Bella Lui similarly
+supplies 88.9 mm for a listed 54 mm case. These dimensions need hardware
+verification, rather than automatic halving or substitution of case diameter.
+For GENESIS, even the full-powered-base-drag sensitivity run reduces apogee
+only from 3297 m to 3223 m, versus the recorded 2916 m. Nozzle-area uncertainty
+alone does not explain that discrepancy. The existing comparison decks omit
+``PART``, so correcting component-versus-total damping parsing does not change
+their saved results.
+
+Equivalent metric/English decks also expose a small native transonic
+sensitivity: for the controlled Andromeda check, CA at Mach 0.9 is 0.396
+versus 0.404, with matching values at Mach 0.3 and 0.6. The difference comes
+from body pressure/wave drag in the native partial output. The audit retains
+this numerical discrepancy; an independent transonic reference is needed to
+decide which prediction is more accurate.

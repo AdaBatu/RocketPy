@@ -49,7 +49,14 @@ class DatcomResult(tuple):
     """Backward-compatible six-array result with body-axis and lateral tables."""
 
     def __new__(
-        cls, values, body=None, derivatives=None, damping=None, beta=None, sideslip=None
+        cls,
+        values,
+        body=None,
+        derivatives=None,
+        damping=None,
+        beta=None,
+        sideslip=None,
+        diagnostics=None,
     ):
         result = super().__new__(cls, values)
         result.body = {} if body is None else body
@@ -57,6 +64,7 @@ class DatcomResult(tuple):
         result.damping = {} if damping is None else damping
         result.beta = np.array([0.0]) if beta is None else np.asarray(beta)
         result.sideslip = sideslip
+        result.diagnostics = [] if diagnostics is None else list(diagnostics)
         return result
 
 
@@ -76,6 +84,21 @@ def parse_datcom_output(base_dir, n_alpha_expected=None, _output=None):
     """
     output = Path(base_dir, "for006.dat").read_text() if _output is None else _output
     lines = output.splitlines()
+    diagnostic_terms = (
+        "CALCULATIONS IN SUBROUTINE",
+        "ANALYSIS FOR THIS AIRFOIL",
+        "CREST CRITICAL MACH NUMBER EXCEEDED",
+        "HYBRID THEORY INVALID",
+        "SECOND ORDER SHOCK EXPANSION TO BE USED",
+        "* WARNING *",
+    )
+    diagnostics = list(
+        dict.fromkeys(
+            line.strip()
+            for line in lines
+            if any(term in line for term in diagnostic_terms)
+        )
+    )
     if n_alpha_expected is None:
         declared = re.search(r"\bNALPHA\s*=\s*([0-9.]+)", output)
         if declared is not None:
@@ -120,12 +143,12 @@ def parse_datcom_output(base_dir, n_alpha_expected=None, _output=None):
             zero.damping,
             beta=list(tables),
             sideslip=tables,
+            diagnostics=diagnostics,
         )
 
-    def read_table(block, columns):
-        header = next(
-            (i for i, line in enumerate(block) if line.split() == columns), None
-        )
+    def read_table(block, columns, *, last=False):
+        headers = [i for i, line in enumerate(block) if line.split() == columns]
+        header = (headers[-1] if last else headers[0]) if headers else None
         if header is None:
             raise RuntimeError(f"DATCOM missing {' '.join(columns)} table")
         rows = []
@@ -175,11 +198,15 @@ def parse_datcom_output(base_dir, n_alpha_expected=None, _output=None):
         lift_rows.append(lift[:, 1:])
         derivative_rows.append(derivatives[:, 1:])
         if "DYNAMIC DERIVATIVES" in "\n".join(block):
+            # PART prints body-alone damping before the assembled vehicle.
+            # The last pair belongs to the total configuration, like CN/CM/CA.
             longitudinal = read_table(
-                block, ["ALPHA", "CNQ", "CMQ", "CAQ", "CNAD", "CMAD"]
+                block, ["ALPHA", "CNQ", "CMQ", "CAQ", "CNAD", "CMAD"], last=True
             )
             lateral = read_table(
-                block, ["ALPHA", "CYR", "CLNR", "CLLR", "CYP", "CLNP", "CLLP"]
+                block,
+                ["ALPHA", "CYR", "CLNR", "CLLR", "CYP", "CLNP", "CLLP"],
+                last=True,
             )
             if not (
                 np.array_equal(body[:, 0], longitudinal[:, 0])
@@ -238,6 +265,7 @@ def parse_datcom_output(base_dir, n_alpha_expected=None, _output=None):
         ),
         damping,
         beta=list(beta_blocks),
+        diagnostics=diagnostics,
     )
 
 
@@ -251,6 +279,7 @@ def _flight_conditions(options):
         "timeout",
         "body_length",
         "powered_base_drag",
+        "nozzle_exit_diameter",
         "reynolds",
     }
     if unknown:
@@ -363,9 +392,13 @@ def datcom_decks(rocket, *, calibration=None, flight_conditions=None):
     options.update(flight_conditions or {})
     calibration = rocket.datcom_calibration if calibration is None else calibration
     edge_radius = calibration["leading_edge_radius"]
-    powered_base_drag = options.get("powered_base_drag", "none")
+    powered_base_drag = options.get(
+        "powered_base_drag", "nozzle" if "nozzle_exit_diameter" in options else "none"
+    )
     if powered_base_drag not in ("none", "nozzle", "full"):
         raise ValueError("powered_base_drag must be 'none', 'nozzle' or 'full'")
+    if "nozzle_exit_diameter" in options and powered_base_drag != "nozzle":
+        raise ValueError("nozzle_exit_diameter requires powered_base_drag='nozzle'")
     mach, alpha, altitude, timeout = _flight_conditions(options)
 
     def canonical(value):
@@ -669,7 +702,17 @@ def datcom_decks(rocket, *, calibration=None, flight_conditions=None):
         )
     exit_diameter = None
     if powered_base_drag == "nozzle":
-        exit_diameter = 2 * float(rocket.motor.nozzle_radius)
+        try:
+            raw_exit = options.get(
+                "nozzle_exit_diameter", 2 * rocket.motor.nozzle_radius
+            )
+            if np.ndim(raw_exit) != 0:
+                raise ValueError
+            exit_diameter = float(raw_exit)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "Powered nozzle diameter must be a finite positive scalar"
+            ) from exc
         if not math.isfinite(exit_diameter) or not 0 < exit_diameter <= aft_diameter:
             raise ValueError(
                 "Powered nozzle diameter must be positive and fit inside the aft body"
@@ -836,8 +879,9 @@ def run_datcom(path, deck, timeout=60):
 class DatcomSurface(GenericSurface):
     """Whole-vehicle body-axis loads, including all eleven DAMP derivatives.
 
-    DATCOM uses forward/right/down axes. In RocketPy the force channels map to
-    (CY, -CN, -CA) and moments to (CM, CLN, CLL). Static lateral derivatives and
+    Native force channels map to RocketPy (CY, -CN, -CA), and moments to
+    (CM, CLN, CLL). DATCOM geometry coordinates increase aft from the nose;
+    RocketPy body z points toward the nose. Static lateral derivatives and
     DAMP derivatives in for006 are per degree. Rates are nondimensionalized by
     diameter/(2 V). Sideslip uses full tables when available, otherwise a
     linear expansion about beta=0.
