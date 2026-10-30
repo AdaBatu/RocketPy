@@ -135,3 +135,49 @@ chord fractions, `LER` is a dimensional radius, and `SSPAN` is normally from
 the centreline; our `SSPAN(1)=0` convention correctly requests exposed-span
 automatic body attachment. These conversions were checked. The hardware
 section values remain unknown, and no fit or default change is applied.
+
+## Published Missile DATCOM examples versus this integration
+
+The [reference-example audit](comparison_data/reference_example_audit.json)
+compares the 1997 guide's worked body/two-fin-set case (Figures 19–21,
+printed pages 65–67) with geometry rebuilt through RocketPy's public API,
+and checks the documented
+[Ansys MissileDatCom wrapper example](https://ansyshelp.ansys.com/public/Views/Secured/ModelCenter/v252/en/ModelCenter_Rem_Exec/ModelCenter_Rem_Exec/mcre_functions/wrappers_components/FileWrapper/examples/ref_fileWrapper_example_missiledatcom.html).
+Run it with:
+
+```sh
+python docs/examples/datcom/comparison_data/audit_reference_examples.py
+```
+
+[The generated manual-case deck](comparison_data/manual_generated_for005.dat)
+is the unmodified output of the geometry generator. The audit adds `SOSE`
+to a copy for the matching-method comparison; no production defaults or
+recorded-rocket predictions change.
+
+| Item | Published examples | Our implementation and result |
+| --- | --- | --- |
+| Geometry and units | Guide: inch dimensions, centreline semispans, trailing-edge sweep and REN per foot | API: metres, exposed span, explicit leading-edge coordinates and REN per metre. With the same body method, all eight published CN/CM/CA rows match at printed precision. |
+| Body method | The guide selects `SOSE`; the Ansys demonstration selects `HYPER` | The generator currently leaves the native default and exposes no method selector. For the guide case at Mach 2.36, default CA at zero incidence is 0.460 versus 0.466 with SOSE; CM at 4 degrees is -1.462 versus -1.577. |
+| Fin thickness arrays | Ansys specifies only `ZUPPER=0.04`; native effective total thickness is 0.066 | Explicit root and tip values of 0.04 give 0.080 total thickness. Our scalar section arguments intentionally repeat at every station, and total thickness is divided between upper/lower surfaces. A single low-level DATCOM array value does not imply that repetition. |
+| Reference quantities | Ansys uses SREF=346.4 square inches and LREF=21 inches for a 20-inch body | We use frontal area and diameter consistently in both native coefficients and physical loads. Different coefficient normalization must be converted before comparison. The Ansys zero-angle CA changes from 0.611 to 0.673 when using frontal area. |
+| Automatic trim | Ansys uses `$TRIM`, which changes panel deflections | Our passive flight model uses specified fixed incidence. In the local reproduction at 10 degrees, trimmed CD is 0.736 and untrimmed CD is 0.711. Trim output is a different table format and is rejected by our passive-table parser. |
+| Surface/atmosphere | Ansys specifies roughness, turbulent flow and sea-level altitude | We default to smooth/turbulent flow and can use actual-atmosphere REN schedules. The example's finish and altitude are inputs for another configuration, not calibration values for our rockets. |
+| Multiple cases | `SAVE` carries selected input namelists into the next case | We repeat complete fixed-beta cases without `SAVE`, avoiding inherited geometry or flow settings. Both are supported native input patterns. |
+
+An additional native numerical sensitivity appears in derivatives. Adding a
+negative-alpha row to the guide's original 0–28 degree schedule changes CNA
+at zero from 0.2802 to 0.2948 per degree and changes some DAMP derivatives,
+even though the positive-angle CN/CM/CA rows remain unchanged. Therefore,
+damping comparisons must also match the alpha schedule. After matching
+method and grids, the generated and independent reference damping tables
+agree within 0.001 at printed precision. An optional native regression now
+checks this complete geometry conversion, rather than only the hand-written
+reference deck and parser.
+
+The missing method selector matters for reproducing supersonic examples.
+However, SOSE produced no CA/CN/CM change in controlled Mach 0.3–1.2 probes
+for GENESIS, Andromeda or Astra. All 11 paired native flight peaks are below
+Mach 1.04, so this finding does not resolve their apogee discrepancies.
+Fin section/edge geometry and surface finish in those models remain assumed.
+Reproducing these examples verifies input conversion and native execution;
+it does not independently validate full-flight accuracy against hardware.

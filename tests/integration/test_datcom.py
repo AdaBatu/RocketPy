@@ -1,6 +1,7 @@
 """DATCOM text parsing, isolated executable lifecycle and flight integration."""
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from rocketpy import DatcomFins, Environment, Flight
+from rocketpy import DatcomFins, Environment, Flight, Rocket
 from rocketpy.rocket.datcom import DAMPING_KEYS, parse_datcom_output, run_datcom
 
 SAMPLE = Path(__file__).parents[1] / "fixtures/surfaces/data/datcom/for006.dat"
@@ -598,3 +599,82 @@ def test_datcom_native_manual_worked_example():
     assert result.body["CM"][0] == pytest.approx(
         [0, -1.577, -3.194, -5.056, -6.962, -8.904, -10.792, -12.692], abs=0.002
     )
+
+
+@pytest.mark.slow
+def test_datcom_generated_geometry_matches_manual_example():
+    """Public geometry conversion reproduces the manual with matched methods."""
+    # Arrange
+    from rocketpy.rocket.datcom import _namelist, datcom_decks
+
+    executable = os.environ.get("DATCOM_EXECUTABLE")
+    if not executable:
+        pytest.skip("Set DATCOM_EXECUTABLE to the target 3/99 executable")
+    inch = 0.0254
+    rocket = Rocket(
+        radius=3.75 * inch / 2,
+        mass=1,
+        inertia=(1, 1, 1),
+        power_off_drag=0,
+        power_on_drag=0,
+        center_of_mass_without_motor=18.75 * inch,
+    )
+    rocket.add_nose(11.25 * inch, "ogive", position=37.5 * inch)
+    options = dict(
+        mach=[2.35, 2.36],
+        alpha=[-4, 0, 4, 8, 12, 16, 20, 24, 28],
+        beta=[0],
+        reynolds=3e6 / 0.3048,  # Published REN is per foot, including with DIM IN.
+        body_length=26.25 * inch,
+    )
+    for n, xle, root, tip, span, maximum, flat, panels in [
+        (2, 15.42, 6.96, 0, 3.48, 0.238, 0.524, [90, 270]),
+        (4, 31.915, 5.585, 2.792, 4.385, 0.288, 0.428, [0, 90, 180, 270]),
+    ]:
+        rocket.add_datcom_hex_fins(
+            n,
+            root_chord=root * inch,
+            tip_chord=tip * inch,
+            span=span * inch,
+            position=(37.5 - xle) * inch,
+            sweep_length=(root - tip) * inch,
+            path=executable,
+            thickness_to_chord=0.04476,
+            max_thickness_position=maximum,
+            flat_length=flat,
+            leading_edge_radius=0.015 * inch,
+            panel_angles=panels,
+            datcom_options=options,
+        )
+    reference = (SAMPLE.parent / "manual_example_for005.dat").read_text()
+    # Native numerical derivatives depend on the ALPHA schedule. Match the
+    # signed grid required by the API and retain the independent input geometry.
+    reference_conditions = _namelist(
+        "FLTCON",
+        [
+            ("NMACH", 2),
+            ("MACH", options["mach"]),
+            ("REN", [3e6, 3e6]),
+            ("NALPHA", len(options["alpha"])),
+            ("ALPHA", options["alpha"]),
+            ("BETA", 0),
+        ],
+    )
+    reference = re.sub(
+        r"\$FLTCON.*?\$", lambda _: reference_conditions, reference, flags=re.S
+    )
+    # Act
+    with pytest.warns(UserWarning, match="four exposed semispans"):
+        generated = datcom_decks(rocket)[0][False]
+    # Match the independently published body method. The production options
+    # currently expose no SOSE selector; do not mistake this for a geometry fix.
+    generated = generated.replace("NEXT CASE", "SOSE\nPART\nNEXT CASE")
+    actual = run_datcom(executable, generated)
+    expected = run_datcom(executable, reference)
+    # Assert
+    for key in ("CN", "CM", "CA"):
+        assert actual.body[key][-1] == pytest.approx(expected.body[key][-1], abs=0.002)
+    for key in DAMPING_KEYS:
+        assert actual.damping[key][-1] == pytest.approx(
+            expected.damping[key][-1], abs=0.002
+        )
