@@ -539,6 +539,7 @@ class Flight(DatcomFlightMixin):
         simulation_mode="6 DOF",
         post_step_callback=None,
         use_udot_rail2=False,
+        datcom_uncertainty=True,
     ):
         """Run a trajectory simulation.
 
@@ -640,6 +641,21 @@ class Flight(DatcomFlightMixin):
             directly from the 1-DOF ``udot_rail1`` phase to the generalized
             6-DOF dynamics at the upper button exit, as in previous versions.
             Default is False.
+        datcom_uncertainty : bool or str, optional
+            With DATCOM fins, True (default) runs two additional isolated ascent
+            simulations with a 20% CD excursion, increased where Wu et al.
+            (2019), DOI 10.1088/1757-899X/612/3/032096, reports larger native-
+            relative CA discrepancies inside its Mach/alpha envelope. CP's
+            distance from the nose varies by 2%. White (1995), AIAA 95-1893,
+            motivates these engineering assumptions but does not validate
+            general drag uncertainty. Results are in
+            ``datcom_uncertainty``; ``datcom_apogee_uncertainty`` is the largest
+            apogee excursion in meters. These are sensitivity scenarios, not
+            confidence bounds. Outside Mach 0.8–3.02 and alpha ±6 degrees the
+            drag excursion is 20%; coverage is reported. False skips
+            the replays; 'upper' or 'lower' runs just that coefficient scenario.
+            Replays stop at apogee and execute callbacks/controllers again on
+            copied inputs. This option has no effect on ordinary rockets.
         Returns
         -------
         None
@@ -655,6 +671,7 @@ class Flight(DatcomFlightMixin):
         self.env = environment
         self.rocket = rocket
         self.rocket.prepare_datcom()
+        self._initialize_datcom_uncertainty(datcom_uncertainty, locals())
         # Warn about an aerodynamically unstable rocket now that it is fully
         # assembled and about to be simulated. Doing it here (instead of on every
         # add_surfaces call during construction) avoids spurious warnings for
@@ -703,6 +720,7 @@ class Flight(DatcomFlightMixin):
         # Initialize prints and plots objects
         self.prints = _FlightPrints(self)
         self.plots = _FlightPlots(self)
+        self._complete_datcom_uncertainty()
 
     def __repr__(self):
         return (
@@ -4026,7 +4044,7 @@ class Flight(DatcomFlightMixin):
             is defined as the distance between the center of pressure and the
             center of gravity, divided by the rocket diameter.
         """
-        return [(t, self.rocket.stability_margin(m, t)) for t, m in self.mach_number]
+        return [(t, self._datcom_stability_margin(m, t)) for t, m in self.mach_number]
 
     # Rail Button Forces
 
@@ -4493,6 +4511,7 @@ class Flight(DatcomFlightMixin):
             "time_overshoot": self.time_overshoot,
             "name": self.name,
             "equations_of_motion": self.equations_of_motion,
+            "datcom_uncertainty": self._datcom_uncertainty_setting,
             # The following outputs are essential to run all_info method
             "solution": self.solution,
             "out_of_rail_time": self.out_of_rail_time,
@@ -4578,6 +4597,7 @@ class Flight(DatcomFlightMixin):
             time_overshoot=data["time_overshoot"],
             name=data["name"],
             equations_of_motion=data["equations_of_motion"],
+            datcom_uncertainty=data.get("datcom_uncertainty", True),
         )
 
     class FlightPhases:

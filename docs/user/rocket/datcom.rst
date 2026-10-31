@@ -70,6 +70,111 @@ assembled objects, including surfaces and motor added after the DATCOM fins.
 Adding a :class:`rocketpy.DatcomFins` instance with ``add_surfaces`` also selects
 DATCOM aerodynamics.
 
+Engineering Sensitivity Runs
+----------------------------
+
+With DATCOM fins, ``Flight`` runs the nominal simulation and two additional
+isolated simulations through apogee by default. Disable the extra simulations
+with ``Flight(..., datcom_uncertainty=False)``. Ordinary rockets retain their
+existing aerodynamic equations, simulation and printed output.
+
+The current engineering rule is:
+
+* Static wind-axis drag CD varies by **at least ±20%**, at every Mach and AoA,
+  for both powered and coast aerodynamics.
+* Within Mach 0.8–3.02 and alpha -6 to +6 degrees, use a larger native-relative
+  axial-force discrepancy from Wu et al. where available. The transferred CA
+  discrepancy is a **CD-error proxy**, not a measured universal CD uncertainty.
+  Outside that envelope, use the 20% excursion without extrapolating the
+  canard study's larger errors.
+* CP's distance from the nose varies by **±2%**. Static pitching/yawing moments
+  are transferred consistently about the original case CG reference.
+* Perpendicular aerodynamic force and native DAMP derivatives are retained.
+  The earlier independent CN and CM-alpha error scaling is no longer used.
+
+The design-accuracy reference is J. T. White (1995), *An assessment of missile
+DATCOM prediction accuracy relative to generic Body+Wing+Tail missile pitch
+aerodynamics*, 13th Applied Aerodynamics Conference, AIAA 95-1893,
+`doi:10.2514/6.1995-1893 <https://doi.org/10.2514/6.1995-1893>`_. The filename
+of the supplied PDF says 2012, but the paper is from 1995. White tests revision
+6/93 on 15 configurations, more than 900 cases, Mach 1.5–5.0, AoA 0–24° and
+roll orientations 0°/45°, without control deflections. His cited preliminary
+accuracy criteria concern **normal force** and CP relative to **body length**.
+They do not establish universal ±20% CD or ±2% nose-to-CP confidence bounds.
+Using the requested percentages throughout flight is an explicit engineering
+assumption, including below the paper's supersonic coverage. The ambiguous
+entries in his CP summary table are not used as standard deviations.
+
+The larger drag discrepancies adapt Table 2 of Hanzhou Wu, Min Gao, Weidong
+Song, Zhao Jie and Yi Wang (2019), *Accuracy Analysis of Aerodynamic Calculation
+of Two-dimensional Ballistic correction Projectile based on Missile Datcom*,
+IOP Conference Series: Materials Science and Engineering **612**, 032096,
+`doi:10.1088/1757-899X/612/3/032096
+<https://doi.org/10.1088/1757-899X/612/3/032096>`_, under
+`CC BY 3.0 <https://creativecommons.org/licenses/by/3.0/>`_. It studies one
+canard projectile, including deflected canards. The signed published error
+uses the measurement denominator:
+``e = (DATCOM - measured) / measured``. With ``e`` as a fraction, convert to
+``u_Wu = abs(e / (1 + e))`` and linearly interpolate these magnitudes with
+Mach/alpha inside the paper's envelope. The applied CD excursion is
+``u_CD = max(0.20, u_Wu)`` there, and ``0.20`` elsewhere. The original raw
+CN/CM-alpha tables remain in the source for provenance, not as active bounds.
+
+At zero alpha and beta this directly multiplies the static CD curve by
+``1 + u_CD`` or ``1 - u_CD``. At finite incidence, the added force lies along
+the relative airflow, preserving the perpendicular force. CA is not blindly
+substituted for CD. Body-axis components are recalculated for Flight; the
+static drag component follows the same multiplier. Native damping-load
+increments remain unchanged. Geometry, calibration inputs, native tables and
+ordinary RocketPy algebraic equations are not overwritten.
+
+CP uses a distance measured aft from the nose, in meters:
+``x_CP_new = x_CP_native * (1 ± 0.02)``. Consequently the change in stability
+margin is ``delta_margin = ±0.02 * x_CP_native / diameter``, in calibers,
+not ±2% of the nominal stability margin. The native small-angle CP is computed
+at each Mach and case reference. Added drag acts there, the new static force
+is transferred to the shifted CP, and the native residual moment couple is
+retained. Both rocket axial coordinate orientations and wet/dry case CG
+references are respected. Undefined native CP remains unavailable.
+
+``upper`` means more drag and CP farther aft from the nose; ``lower`` means
+less drag and CP farther forward. These are two correlated scenarios. They
+do not guarantee the greatest/smallest apogee or stability margin among all
+independent combinations of drag and CP errors. No bias correction is applied
+to the nominal run. The report still gives the fraction of ascent time outside
+Wu's Mach/total-incidence coverage, identifying the scope of that source.
+
+Inspect the calculated results without running simulations during printing::
+
+    flight.prints.apogee_conditions()
+    flight.prints.stability_margin()
+    uncertainty_m = flight.datcom_apogee_uncertainty
+    report = flight.datcom_uncertainty
+    print(report.policy)
+    print(report.cases)  # nominal / upper / lower; SI units, stability in calibers
+    print(report.uncertainty("max_speed"))  # m/s, ascent only
+    upper = report.flights["upper"]
+    lower = report.flights["lower"]
+
+Printed ``apogee ± datcom_uncertainty`` is the **largest absolute departure
+from nominal**, in meters, for ASL and AGL. It summarizes potentially asymmetric
+scenario results; it is not a standard deviation, confidence interval or
+percentile. The charts use the actual asymmetric range across all three
+apogees. Peak ascent speed is inertial speed; apogee freestream speed is
+relative to the wind. Each scenario uses its own apogee and rail-exit time.
+Incomplete or failed ascents are unavailable, not zero-width uncertainty.
+
+Replay rockets and environments are copied before nominal integration. They
+reuse native tables and atmosphere schedules, stop at apogee and do not launch
+new DATCOM runs for unchanged decks. They do not refit the atmosphere schedule
+or adaptive grid: check each replay's envelope. Callbacks/controllers execute
+again; their external side effects remain the caller's responsibility. Python
+and NumPy global random states are restored after replay. This covers only the
+stated aerodynamic sensitivity, not wind, mass, thrust, recovery or measurement
+uncertainty. ``datcom_uncertainty="upper"`` or ``"lower"`` runs an individual
+case. Replay Flight loads/stability use its local scenario model; the shared
+Rocket's reporting curves remain nominal.
+
 Body Profile Selection
 ----------------------
 

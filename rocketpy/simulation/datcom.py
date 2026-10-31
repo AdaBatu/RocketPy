@@ -5,6 +5,8 @@ from functools import wraps
 
 from rocketpy.mathutils.vector_matrix import Matrix, Vector
 
+from .datcom_uncertainty import DatcomUncertaintyMixin
+
 
 def datcom_derivative(method):
     """Wrap an RHS with a local implicit incidence-rate solve when DATCOM is active."""
@@ -26,13 +28,14 @@ def datcom_derivative(method):
     return evaluate
 
 
-class DatcomFlightMixin:
+class DatcomFlightMixin(DatcomUncertaintyMixin):
     """Time-dependent loads and deterministic unsteady aerodynamic coupling."""
 
     def _datcom_surface_loads(self, surface, time, *args):
         """Supply time and the instantaneous incidence rate to DATCOM only."""
         if surface is self.rocket._datcom_model:
-            loads = surface.compute_forces_and_moments_at_time(
+            model = getattr(self, "_datcom_load_model", surface)
+            loads = model.compute_forces_and_moments_at_time(
                 time, getattr(self, "_datcom_alpha_dot", 0.0), *args
             )
             if any(
@@ -113,7 +116,8 @@ class DatcomFlightMixin:
         """Constrained axial load uses body-axis CA rather than stability-axis CD."""
         if self.rocket._datcom_model is None:
             return fallback
-        loads = self.rocket._datcom_model.compute_forces_and_moments_at_time(
+        model = getattr(self, "_datcom_load_model", self.rocket._datcom_model)
+        loads = model.compute_forces_and_moments_at_time(
             time,
             0.0,
             velocity,

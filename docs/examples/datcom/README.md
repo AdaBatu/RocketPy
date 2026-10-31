@@ -2,6 +2,109 @@
 
 **Work in progress:** DATCOM currently produces poor flight predictions for several comparison rockets. The discrepancies are unresolved and are being investigated; these results should not be treated as validated predictions.
 
+DATCOM flights calculate two engineering sensitivity ascents around the nominal
+result. The current rule is **at least ±20% static wind-axis CD at every Mach
+and AoA**, with **±2% nose-to-CP distance**. Within Wu et al.'s Mach 0.8–3.02 /
+alpha ±6° envelope, use a larger native-relative axial-force discrepancy as a
+CD-error proxy. Outside that envelope use the 20% excursion. At zero incidence
+this scales the whole CD-versus-Mach curve; at finite incidence the added force
+follows the relative airflow and preserves perpendicular force. Static pitch
+and yaw moments are transferred consistently; native DAMP terms are retained.
+The earlier independent CN and CM-alpha scaling is no longer active.
+
+The design-accuracy reference is J. T. White (1995), *An assessment of missile
+DATCOM prediction accuracy relative to generic Body+Wing+Tail missile pitch
+aerodynamics*, 13th Applied Aerodynamics Conference, AIAA 95-1893,
+[doi:10.2514/6.1995-1893](https://doi.org/10.2514/6.1995-1893).
+The supplied filename says 2012, but the paper is from 1995. It assesses
+revision 6/93 on 15 configurations and over 900 cases at Mach 1.5–5.0,
+AoA 0–24°, roll 0°/45°, without control deflections. White's cited preliminary
+criteria concern **normal force** and CP relative to **body length**; he does
+not establish universal ±20% CD or ±2% nose-to-CP confidence bounds. The two
+percentages used here are the requested engineering assumptions, extended
+throughout flight. His normal-force bias/scatter and ambiguous CP statistics
+are not applied as a nominal correction or a statistical distribution.
+
+The larger drag discrepancies adapt Table 2 of Hanzhou Wu, Min Gao, Weidong
+Song, Zhao Jie and Yi Wang (2019), *Accuracy Analysis of Aerodynamic Calculation
+of Two-dimensional Ballistic correction Projectile based on Missile Datcom*,
+**IOP Conf. Ser.: Mater. Sci. Eng. 612**, 032096,
+[doi:10.1088/1757-899X/612/3/032096](https://doi.org/10.1088/1757-899X/612/3/032096),
+under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+For signed measurement-relative error `e`, the native-relative magnitude is
+`abs(e / (1 + e))`, with `e` expressed as a fraction. The drag excursion is
+`max(0.20, converted_Wu_error)` inside the paper's envelope and `0.20` outside.
+CA discrepancy is transferred to CD as an explicit assumption. The raw CN and
+CM-alpha tables remain for provenance but no longer set sensitivity bounds.
+
+CP is measured from the nose: `x_CP_new = x_CP_native * (1 ± 0.02)`.
+The stability-margin change is `±0.02 * x_CP_native / diameter`, in calibers,
+not 2% of the original margin. Coordinate origins and powered/coast CG
+references remain consistent. Upper/lower mean more/less drag with CP
+farther aft/forward; they are two correlated scenarios, not an exhaustive
+search over independent combinations. The nominal prediction is uncorrected.
+
+Printing shows three apogees, peak ascent speeds, apogee freestream speeds
+and stability margins. Apogee **± uncertainty** is the largest absolute
+scenario departure in meters, not a confidence interval or percentile.
+`flight.datcom_uncertainty.cases` exposes the values and
+`flight.datcom_apogee_uncertainty` exposes the scalar. Disable replays using
+`Flight(..., datcom_uncertainty=False)`. See the
+[full method and limitations](../../user/rocket/datcom.rst).
+
+The regenerated [sensitivity results](comparison_data/uncertainty_sensitivity.csv)
+cover all 11 currently supported recorded-rocket DATCOM models, with the
+[machine-readable report](comparison_data/uncertainty_sensitivity.json) and
+[example printed output](comparison_data/genesis_uncertainty.txt). Reproduce
+all of them with
+`python docs/examples/datcom/comparison_data/uncertainty_sensitivity.py`.
+
+The [apogee chart](comparison_data/apogee_uncertainty_comparison.png) compares
+RocketPy's supplied-CD prediction, nominal DATCOM with **asymmetric scenario
+whiskers**, and recorded apogee as a dashed line. Green/red rank nominal
+accuracy. A [compact three-rocket view](comparison_data/apogee_uncertainty_comparison_focus.png)
+and [stability chart](comparison_data/stability_uncertainty_comparison.png)
+are also exported, with [CSV values](comparison_data/apogee_uncertainty_comparison.csv).
+All charts and tables are in [the comparison notebook](rocket_comparison.ipynb);
+the original 16-rocket chart still identifies unavailable cases separately.
+No recorded stability margin is available for the 11 paired DATCOM models,
+so their stability whiskers compare simulations only. Rebuild charts without
+running DATCOM using
+`python docs/examples/datcom/comparison_data/plot_apogee_uncertainty.py`.
+
+CD-versus-Mach charts are exported for all 11 rockets, separately for
+[powered flight](comparison_data/cd_powered_comparison.png) and
+[coast](comparison_data/cd_coast_comparison.png), with a
+[compact three-rocket view](comparison_data/cd_comparison_focus.png).
+Blue is RocketPy's supplied drag curve; orange is nominal DATCOM; the orange
+band uses the active 20%-minimum CD rule at **alpha = beta = 0°**. The dotted
+black line is the **apogee-fitted constant CD**, inferred using ordinary
+RocketPy; it is not measured CD and is not unique. No measured CD records
+are supplied, so these charts do not rank drag-prediction accuracy. Grey
+background marks Mach values above the reference ascent peak, including
+unflown transonic points. Curves retain their saved Mach/atmosphere schedules;
+the 2% CP shift does not directly change zero-incidence static CD.
+The [AST-HER chart](comparison_data/asteria_cd_uncertainty_comparison.png)
+compares the same two models without a fitted or measured CD: **AST-HER has
+not flown**. Its saved RocketPy curve lacks the Mach 0.01 sample; that point
+remains a gap rather than an invented value. Both existing notebooks include
+their corresponding CD charts.
+PNG/SVG exports and the complete
+[rocket curve data](comparison_data/cd_uncertainty_comparison.csv) and
+[AST-HER curve data](comparison_data/asteria_cd_uncertainty_comparison.csv)
+can be regenerated without running DATCOM:
+`python docs/examples/datcom/comparison_data/plot_cd_comparison.py`.
+
+Recorded apogees fall inside the scenario ranges for **4 of 11 rockets**. RocketPy's supplied-CD nominal prediction is closer for **8 of 11**. Inclusion is a diagnostic, not evidence of a calibrated confidence level.
+
+| Rocket | Recorded AGL (m) | RocketPy (m) | DATCOM nominal (m) | DATCOM scenario range (m) |
+| --- | ---: | ---: | ---: | ---: |
+| GENESIS | 2916 | 3045 | 3297 | 3068–3584 |
+| Astra | 3250 | 3043 | 3696 | 3437–4032 |
+| Andromeda | 3443 | 3616 | 4171 | 3794–4832 |
+
+These bars do not cover every recorded apogee. Geometry assumptions, drag modelling and other uncertainties remain unresolved.
+
 Only two example notebooks are included:
 
 - [Recorded rockets](rocket_comparison.ipynb): DATCOM, ordinary RocketPy and

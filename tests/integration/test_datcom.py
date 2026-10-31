@@ -1,6 +1,7 @@
 """DATCOM text parsing, isolated executable lifecycle and flight integration."""
 
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -245,6 +246,167 @@ def test_datcom_flight_uses_full_model(mode, equations, datcom_rocket):
     assert np.isfinite(np.asarray(flight.solution)).all()
     assert flight.solution[-1][0] == pytest.approx(0.02)
     assert len(rocket.aerodynamic_surfaces) == 3
+
+
+@pytest.mark.parametrize(
+    "mode,equations",
+    [("6 DOF", "standard"), ("6 DOF", "solid_propulsion"), ("3 DOF", "standard")],
+)
+def test_datcom_uncertainty_flight_replays_and_prints(
+    mode, equations, datcom_rocket, capsys
+):
+    """Three independent ascents report numeric ± without changing nominal loads."""
+    # Arrange
+    rocket = datcom_rocket
+    tables = parse_datcom_output(SAMPLE.parent)
+    environment = Environment(elevation=100)
+    options = dict(
+        rail_length=5,
+        inclination=90,
+        terminate_on_apogee=True,
+        max_time=60,
+        max_time_step=0.2,
+        simulation_mode=mode,
+        equations_of_motion=equations,
+    )
+    # Act
+    with patch("rocketpy.rocket.datcom.run_datcom", return_value=tables) as run:
+        baseline = Flight(rocket, environment, datcom_uncertainty=False, **options)
+        flight = Flight(rocket, environment, **options)
+    report = flight.datcom_uncertainty
+    flight.prints.apogee_conditions()
+    flight.prints.stability_margin()
+    output = capsys.readouterr().out
+    # Assert
+    assert report is not None
+    assert not report.errors
+    assert set(report.cases) == {"nominal", "upper", "lower"}
+    assert run.call_count == 2  # replays reuse the native tables
+    assert flight.apogee == pytest.approx(baseline.apogee, abs=1e-8)
+    np.testing.assert_allclose(flight.solution, baseline.solution, atol=1e-8, rtol=0)
+    assert (
+        report.cases["upper"]["apogee"]
+        < flight.apogee
+        < report.cases["lower"]["apogee"]
+    )
+    assert flight.datcom_apogee_uncertainty > 0
+    assert report.uncertainty("initial_stability_margin") > 0
+    assert report.cases["nominal"]["apogee_agl"] == pytest.approx(flight.apogee - 100)
+    for case in ("upper", "lower"):
+        replay = report.flights[case]
+        assert replay.rocket is not rocket
+        assert replay.datcom_uncertainty is None
+        assert replay._datcom_load_model is not replay.rocket._datcom_model
+        assert replay.terminate_on_apogee
+    assert flight._datcom_load_model is rocket._datcom_model
+    assert "±" in output
+    assert "DATCOM coefficient upper: apogee" in output
+    assert "DATCOM coefficient lower stability" in output
+    assert "not a confidence interval" in output
+    assert "outside Wu" in output
+
+
+def test_datcom_uncertainty_incomplete_ascent(datcom_rocket, capsys):
+    """A cutoff before apogee cannot silently produce a zero-width uncertainty."""
+    # Arrange
+    tables = parse_datcom_output(SAMPLE.parent)
+    # Act
+    with patch("rocketpy.rocket.datcom.run_datcom", return_value=tables):
+        flight = Flight(datcom_rocket, Environment(), rail_length=5, max_time=0.02)
+    flight.prints.apogee_conditions()
+    output = capsys.readouterr().out
+    # Assert
+    assert flight.datcom_uncertainty is None
+    assert flight.datcom_apogee_uncertainty is None
+    assert "did not reach apogee" in output
+    assert "±" not in output
+
+
+def test_datcom_uncertainty_replays_restore_random_states(datcom_rocket):
+    """Replays do not consume the caller's random sequence beyond nominal flight."""
+    # Arrange
+    tables = parse_datcom_output(SAMPLE.parent)
+    options = dict(
+        rail_length=5,
+        inclination=90,
+        terminate_on_apogee=True,
+        max_time=60,
+        max_time_step=0.5,
+    )
+
+    def callback(_flight):
+        np.random.random()
+        random.random()
+
+    original_numpy_state, original_python_state = (
+        np.random.get_state(),
+        random.getstate(),
+    )
+    # Act
+    try:
+        with patch("rocketpy.rocket.datcom.run_datcom", return_value=tables):
+            np.random.seed(123)
+            random.seed(123)
+            Flight(
+                datcom_rocket,
+                Environment(),
+                post_step_callback=callback,
+                datcom_uncertainty=False,
+                **options,
+            )
+            expected = (np.random.random(), random.random())
+            np.random.seed(123)
+            random.seed(123)
+            flight = Flight(
+                datcom_rocket, Environment(), post_step_callback=callback, **options
+            )
+            actual = (np.random.random(), random.random())
+    finally:
+        np.random.set_state(original_numpy_state)
+        random.setstate(original_python_state)
+    # Assert
+    assert actual == expected
+    assert not flight.datcom_uncertainty.errors
+
+
+def test_datcom_uncertainty_ordinary_rocket_unchanged(calisto, capsys):
+    """The default introduces no replay or DATCOM output for ordinary rockets."""
+    # Arrange
+    environment = Environment()
+    options = dict(rail_length=5, max_time=0.1)
+    # Act
+    baseline = Flight(calisto, environment, datcom_uncertainty=False, **options)
+    flight = Flight(calisto, environment, **options)
+    flight.prints.apogee_conditions()
+    output = capsys.readouterr().out
+    # Assert
+    np.testing.assert_array_equal(flight.solution, baseline.solution)
+    assert flight.datcom_uncertainty is None
+    assert flight.datcom_apogee_uncertainty is None
+    assert "DATCOM" not in output
+    assert "±" not in output
+
+
+@pytest.mark.parametrize("setting", [True, False, "upper", "lower"])
+def test_datcom_uncertainty_setting_serialization(setting, datcom_rocket):
+    """Flight dictionary round trips preserve opt-out and individual scenarios."""
+    # Arrange
+    tables = parse_datcom_output(SAMPLE.parent)
+    # Act
+    with patch("rocketpy.rocket.datcom.run_datcom", return_value=tables):
+        flight = Flight(
+            datcom_rocket,
+            Environment(),
+            rail_length=5,
+            max_time=0.02,
+            datcom_uncertainty=setting,
+        )
+        data = flight.to_dict()
+        restored = Flight.from_dict(data)
+    # Assert
+    assert data["datcom_uncertainty"] == setting
+    assert restored._datcom_uncertainty_setting == setting
+    assert restored.apogee == flight.apogee
 
 
 @pytest.mark.slow
